@@ -1,25 +1,43 @@
-sudo: required
-dist: xenial    # I wish this worked; defaults to trusty
-services:
-  - docker
-before_install:
-  - docker rm fboss_build fboss_build_phase2 fboss_build_phase3 || true   # clean up from any old runs
-  # split docker commands up to avoid travis timeouts
-  #    Between each phase, use 'docker commit' to make sure the subsequent
-  #    phase starts off where the last one stopped
-  #    
-  # Phase 1 - build just the dependencies
-  - docker run --name fboss_build -v `pwd`:/tmp/code opennetworklinux/builder9:1.0 /bin/sh -c "g++ --version ; cd /tmp/code && bash getdeps.sh"
-  - docker commit fboss_build fboss/tmp  
+# Facebook projects that use `fbcode_builder` for continuous integration
+# share this Travis configuration to run builds via Docker.
+
+# Docker disables IPv6 in containers by default. Enable it for unit tests that need [::1].
+before_script:
+  - if [[ "$TRAVIS_OS_NAME" != "osx" ]];
+    then
+      sudo build/fbcode_builder/docker_enable_ipv6.sh;
+    fi
+
+env:
+  global:
+    - travis_cache_dir=$HOME/travis_ccache
+    # Travis times out after 50 minutes. Very generously leave 10 minutes
+    # for setup (e.g.  cache download, compression, and upload), so we never
+    # fail to cache the progress we made.
+    - docker_build_timeout=40m
+
+cache:
+  # Our build caches can be 200-300MB, so increase the timeout to 7 minutes
+  # to make sure we never fail to cache the progress we made.
+  timeout: 420
+  directories:
+  - $HOME/travis_ccache  # see docker_build_with_ccache.sh
+
+# Ugh, `services:` must be in the matrix, or we get `docker: command not found`
+#   https://github.com/travis-ci/travis-ci/issues/5142
+matrix:
+  include:
+    - env: ['os_image=ubuntu:18.04', gcc_version=7]
+      services: [docker]
+
+addons:
+  apt:
+    packages: python2.7
+
 script:
-  # Phase 2 - build just libfboss_agent.a (most of the fboss code)
-  - docker run --name fboss_build_phase2 -v `pwd`:/tmp/code fboss/tmp /bin/sh -c "cd /tmp/code && mkdir build && cd build && cmake .. && make -j`grep -c processor /proc/cpuinfo` fboss_agent"
-  - docker commit fboss_build_phase2 fboss/tmp2
-  # Phase 3 - build everything else
-  - docker run --name fboss_build_phase3 -v `pwd`:/tmp/code fboss/tmp /bin/sh -c "cd /tmp/code && mkdir build && cd build && cmake .. && make -j`grep -c processor /proc/cpuinfo`"
-  - docker commit fboss_build_phase3 fboss/tmp3
-  # This hangs in travis !?!?  Need to debug
-  # - docker run --name fboss_build_phase4 -v `pwd`:/tmp/code fboss/tmp /bin/sh -c "cd /tmp/code/build && make test"
+  # We don't want to write the script inline because of Travis kludginess --
+  # it looks like it escapes " and \ in scripts when using `matrix:`.
+  - ./build/fbcode_builder/travis_docker_build.sh
 
 notifications:
   email:
